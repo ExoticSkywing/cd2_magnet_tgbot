@@ -112,6 +112,7 @@ async def clean_task_folder(stub, metadata, folder_path) -> str | None:
     try:
         # 递归获取所有文件和目录
         all_files, all_dirs = await get_all_items_recursive(stub, metadata, folder_path)
+        logger.info(f"📁 扫描 `{folder_name}`: 发现 {len(all_files)} 个文件, {len(all_dirs)} 个目录")
 
         # 如果没有任何内容，直接删除空文件夹
         if not all_files and not all_dirs:
@@ -124,12 +125,19 @@ async def clean_task_folder(stub, metadata, folder_path) -> str | None:
         files_to_delete = []
 
         for f in all_files:
+            size_mb = f.size / (1024 * 1024)
             if f.size < threshold_bytes:
                 # 体积 < 阈值，删除
+                logger.debug(f"  🗑️ 标记删除(小文件): {f.name} ({size_mb:.1f}MB)")
                 files_to_delete.append(f.fullPathName)
             elif any(k.lower() in f.name.lower() for k in current_black):
                 # 体积 >= 阈值但匹配黑名单，删除
+                logger.debug(f"  🗑️ 标记删除(黑名单): {f.name} ({size_mb:.1f}MB)")
                 files_to_delete.append(f.fullPathName)
+            else:
+                logger.debug(f"  ✅ 保留: {f.name} ({size_mb:.1f}MB)")
+
+        logger.info(f"  待删除文件数: {len(files_to_delete)}/{len(all_files)}")
 
         # 执行文件删除
         delete_count = 0
@@ -229,12 +237,15 @@ async def cmd_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stub = clouddrive_pb2_grpc.CloudDriveFileSrvStub(channel)
             metadata = [('authorization', f'Bearer {CD2_TOKEN}')]
             root_req = clouddrive_pb2.ListSubFileRequest(path=SAVE_PATH)
+            dir_count = 0
             async for reply in stub.GetSubFiles(root_req, metadata=metadata, timeout=30):
                 if reply.subFiles:
                     for f in reply.subFiles:
                         if f.isDirectory:
+                            dir_count += 1
                             res = await clean_task_folder(stub, metadata, f.fullPathName)
                             if res: results.append(res)
+            logger.info(f"📂 SAVE_PATH 下共发现 {dir_count} 个子目录")
 
         report = "\n".join(results) if results else "✅ 下载目录非常整洁，无需清理。"
         await status_msg.edit_text(f"📊 **清理报告：**\n{report}", parse_mode='Markdown')
