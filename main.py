@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 项目名称: CloudDrive2 Telegram 离线下载管家
-版本: 1.1.3
+版本: 1.1.4
 功能描述:
     1. 链接监听: 自动识别 Magnet、HTTP、ed2k 链接并提交至 CD2 离线下载。
-    2. 定时清理: 基于 Cron 表达式，定时执行下载目录的深度扫描与广告清理。
+    2. 定时清理: 基于 Cron 表达式，递归扫描下载目录，删除小文件和黑名单文件，清理空目录。
     3. 异常容错: 增加全局错误处理与 gRPC 超时控制，防止网络波动导致假死。
 作者: ymting
 """
@@ -18,7 +18,7 @@ import clouddrive_pb2_grpc
 from datetime import datetime
 
 # 版本号
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram import Update, BotCommand
@@ -63,48 +63,94 @@ def get_blacklist():
         return [line.strip() for line in f if line.strip()]
 
 
+async def get_all_items_recursive(stub, metadata, folder_path) -> tuple[list, list]:
+    """
+    递归获取文件夹下所有文件和目录
+    返回: (文件列表, 目录列表)
+    """
+    files = []
+    directories = []
+
+    req = clouddrive_pb2.ListSubFileRequest(path=folder_path)
+    sub_items = []
+    async for reply in stub.GetSubFiles(req, metadata=metadata, timeout=15):
+        if reply.subFiles:
+            sub_items.extend(reply.subFiles)
+
+    for item in sub_items:
+        if item.isDirectory:
+            directories.append(item)
+            # 递归获取子目录中的内容
+            sub_files, sub_dirs = await get_all_items_recursive(stub, metadata, item.fullPathName)
+            files.extend(sub_files)
+            directories.extend(sub_dirs)
+        else:
+            files.append(item)
+
+    return files, directories
+
+
+async def is_directory_empty(stub, metadata, dir_path) -> bool:
+    """检查目录是否为空"""
+    req = clouddrive_pb2.ListSubFileRequest(path=dir_path)
+    sub_items = []
+    async for reply in stub.GetSubFiles(req, metadata=metadata, timeout=15):
+        if reply.subFiles:
+            sub_items.extend(reply.subFiles)
+    return len(sub_items) == 0
+
+
 async def clean_task_folder(stub, metadata, folder_path) -> str | None:
     """
     对单个任务文件夹执行清理动作:
-    - 删除匹配关键词的广告文件。
-    - 若文件夹为空，或最大文件体积未达标，则整体删除任务。
+    - 递归扫描所有文件
+    - 体积 < 阈值的文件删除
+    - 体积 >= 阈值且匹配黑名单的文件删除
+    - 清理空目录（不删除 folder_path 本身）
     """
     folder_name = os.path.basename(folder_path)
     try:
-        # 扫描子文件，设置超时防止因 CD2 挂载点卡顿导致程序假死
-        req = clouddrive_pb2.ListSubFileRequest(path=folder_path)
-        sub_files = []
-        async for reply in stub.GetSubFiles(req, metadata=metadata, timeout=15):
-            if reply.subFiles: sub_files.extend(reply.subFiles)
+        # 递归获取所有文件和目录
+        all_files, all_dirs = await get_all_items_recursive(stub, metadata, folder_path)
 
-        # 场景 A: 空文件夹直接移除
-        if not sub_files:
+        # 如果没有任何内容，直接删除空文件夹
+        if not all_files and not all_dirs:
             await stub.DeleteFiles(clouddrive_pb2.MultiFileRequest(path=[folder_path]), metadata=metadata)
             return f"🗑️ 发现空目录已删除: `{folder_name}`"
 
-        # 场景 B: 匹配黑名单关键词
+        # 判断删除条件
         current_black = get_blacklist()
-        files_to_delete = [f.fullPathName for f in sub_files if any(k.lower() in f.name.lower() for k in current_black)]
-        delete_count = len(files_to_delete)
+        threshold_bytes = SIZE_THRESHOLD_MB * 1024 * 1024
+        files_to_delete = []
 
+        for f in all_files:
+            if f.size < threshold_bytes:
+                # 体积 < 阈值，删除
+                files_to_delete.append(f.fullPathName)
+            elif any(k.lower() in f.name.lower() for k in current_black):
+                # 体积 >= 阈值但匹配黑名单，删除
+                files_to_delete.append(f.fullPathName)
+
+        # 执行文件删除
+        delete_count = 0
         if files_to_delete:
             await stub.DeleteFiles(clouddrive_pb2.MultiFileRequest(path=files_to_delete), metadata=metadata)
+            delete_count = len(files_to_delete)
 
-        # 场景 C: 重新判定文件夹内容质量
-        remaining = [f for f in sub_files if f.fullPathName not in files_to_delete and not f.isDirectory]
-        max_size = max([f.size for f in remaining] or [0])
+        # 清理空目录（从最深层开始）
+        all_dirs.sort(key=lambda x: x.fullPathName.count('/'), reverse=True)
 
-        if not remaining:
-            # 清理后变为空，执行删除
+        for d in all_dirs:
+            if await is_directory_empty(stub, metadata, d.fullPathName):
+                await stub.DeleteFiles(clouddrive_pb2.MultiFileRequest(path=[d.fullPathName]), metadata=metadata)
+
+        # 最后检查 folder_path 是否为空
+        if await is_directory_empty(stub, metadata, folder_path):
             await stub.DeleteFiles(clouddrive_pb2.MultiFileRequest(path=[folder_path]), metadata=metadata)
-            return f"🗑️ 清理了 {delete_count} 个垃圾文件，变为空目录已删除: `{folder_name}`"
+            return f"🗑️ 清理了 {delete_count} 个小文件，变为空目录已删除: `{folder_name}`"
 
-        if max_size < SIZE_THRESHOLD_MB * 1024 * 1024:
-            # 即使有文件，但如果都是几 MB 的小文件，也判定为无效任务
-            await stub.DeleteFiles(clouddrive_pb2.MultiFileRequest(path=[folder_path]), metadata=metadata)
-            return f"⚠️ 任务体积过小({max_size // (1024 * 1024)}MB)，已整体清理: `{folder_name}`"
+        return f"🧹 已从 `{folder_name}` 中移除 {delete_count} 个小文件。" if delete_count > 0 else None
 
-        return f"🧹 已从 `{folder_name}` 中移除 {delete_count} 个垃圾文件。" if delete_count > 0 else None
     except Exception as e:
         logger.error(f"处理文件夹 {folder_name} 出错: {str(e)}")
         return f"❌ 处理 `{folder_name}` 异常: {str(e)}"
