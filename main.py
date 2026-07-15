@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 项目名称: CloudDrive2 Telegram 离线下载管家
-版本: 1.1.4
+版本: 1.1.5
 功能描述:
     1. 链接监听: 自动识别 Magnet、HTTP、ed2k 链接并提交至 CD2 离线下载。
     2. 定时清理: 基于 Cron 表达式，递归扫描下载目录，删除小文件和黑名单文件，清理空目录。
@@ -11,6 +11,7 @@
 
 import logging
 import os
+import time
 import grpc
 import asyncio
 import clouddrive_pb2
@@ -18,7 +19,7 @@ import clouddrive_pb2_grpc
 from datetime import datetime
 
 # 版本号
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram import Update, BotCommand
@@ -38,14 +39,17 @@ PROXY_URL = os.getenv("PROXY_URL", "")  # 连接 Telegram 的网络代理
 CLEAN_CRON = os.getenv("CLEAN_CRON", "30 3 * * *")  # 定时清理的 Cron 表达式
 BLACKLIST_FILE = "blacklist.txt"  # 黑名单关键词存储文件
 SIZE_THRESHOLD_MB = int(os.getenv("SIZE_THRESHOLD", "300"))  # 有效文件的最小体积阈值
+NETWORK_ERROR_RESET_SECONDS = int(os.getenv("NETWORK_ERROR_RESET_SECONDS", "300"))
+if NETWORK_ERROR_RESET_SECONDS <= 0:
+    raise ValueError("NETWORK_ERROR_RESET_SECONDS 必须是大于 0 的整数")
 
 # 配置日志输出，方便在 Docker 日志中查看运行状态
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 网络错误重试计数器
-MAX_NETWORK_RETRIES = int(os.getenv("MAX_RETRIES", "10"))  # 最大重试次数，默认10次
-_network_retry_count = 0
+# 网络异常只按时间窗口分组记录，不再作为停止应用的条件
+_network_error_count = 0
+_last_network_error_at: float | None = None
 
 
 # ==========================================
@@ -187,23 +191,49 @@ async def run_auto_clean():
 # 3. Telegram 交互处理器
 # ==========================================
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """全局错误拦截器，防止网络波动直接让程序崩溃"""
-    global _network_retry_count
-    error = context.error
-    logger.error(f"⚠️ 机器人运行时捕获到异常: {error}")
+def _is_network_error(error: object) -> bool:
+    """识别 Telegram/httpx 抛出的可恢复网络异常。"""
+    error_text = str(error)
+    return (
+        isinstance(error, (NetworkError, TimedOut))
+        or "ConnectError" in error_text
+        or "ConnectTimeout" in error_text
+    )
 
-    # 对于网络连接错误，计数并判断是否达到最大重试次数
-    if isinstance(error, (NetworkError, TimedOut)) or "ConnectError" in str(error) or "ConnectTimeout" in str(error):
-        _network_retry_count += 1
-        logger.warning(f"🌐 网络连接异常 ({_network_retry_count}/{MAX_NETWORK_RETRIES})，正在等待重试...")
 
-        if _network_retry_count >= MAX_NETWORK_RETRIES:
-            logger.error(f"❌ 已达到最大重试次数 ({MAX_NETWORK_RETRIES})，停止运行。请检查代理或网络配置。")
-            context.application.stop_running()
+def _record_network_error(now: float | None = None) -> int:
+    """记录当前网络异常，并在静默超过配置窗口后开始新一轮计数。"""
+    global _network_error_count, _last_network_error_at
+
+    current_time = time.monotonic() if now is None else now
+    # 成功请求不会进入错误处理器，因此在下一次异常到来时按静默时长惰性重置。
+    if (
+        _last_network_error_at is None
+        or current_time - _last_network_error_at >= NETWORK_ERROR_RESET_SECONDS
+    ):
+        _network_error_count = 1
     else:
-        # 非 network 错误时重置计数器（表示网络已恢复正常）
-        _network_retry_count = 0
+        _network_error_count += 1
+
+    _last_network_error_at = current_time
+    return _network_error_count
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """全局错误拦截器，可恢复网络异常交给 Telegram 轮询机制继续重连。"""
+    error = context.error
+
+    if _is_network_error(error):
+        error_count = _record_network_error()
+        logger.warning(
+            "🌐 网络连接异常，本轮第 %d 次；连续 %d 秒无异常后重新计数。"
+            "Telegram 轮询将继续自动重连。错误: %s",
+            error_count,
+            NETWORK_ERROR_RESET_SECONDS,
+            error,
+        )
+        return
+
+    logger.error("⚠️ 机器人运行时捕获到非网络异常: %s", error)
 
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
