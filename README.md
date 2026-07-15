@@ -1,6 +1,6 @@
 # CloudDrive2 Telegram 下载管理器
 
-**版本: 1.1.4**
+**版本: 1.1.5**
 
 项目简介：
 这是一个专为 CloudDrive2 (CD2) 开发的 Telegram 机器人助手。它能够接收磁力链接、HTTP 链接及 ed2k 链接，并自动提交至 CD2 执行离线下载，同时提供强大的自动化后期清理功能。
@@ -41,6 +41,7 @@ services:
       - ADMIN_IDS=1234567,8901234            # 管理员数字 ID，多个用逗号隔开
       - SIZE_THRESHOLD=300                   # 判定垃圾任务的体积阈值 (MB)
       - PROXY_URL=http://192.168.31.10:7890  # 可选：访问 Telegram 的代理地址
+      - NETWORK_ERROR_RESET_SECONDS=300      # 网络异常静默多久后重新计数（秒）
       - CLEAN_CRON=30 3 * * *
 
 ```
@@ -57,6 +58,7 @@ services:
 | SAVE_PATH      | 否  | /115/离线下载 | 离线下载任务存放的根路径 |
 | SIZE_THRESHOLD | 否  | 300 | 文件体积小于此值(MB)将被删除，大于等于此值时检查黑名单 |
 | PROXY_URL      | 否  | - | 连接 Telegram 的代理，支持 http/socks5 |
+| NETWORK_ERROR_RESET_SECONDS | 否 | 300 | 网络异常静默达到此秒数后开始新一轮计数，仅用于日志诊断 |
 | CLEAN_CRON     | 否  |  30 3 * * * | 定时清理任务的 Cron 表达式|
 
 
@@ -72,6 +74,11 @@ services:
 ---
 
 ## 🛠️ 更新日志
+
+### v1.1.5 (2026-07-15)
+* **修复网络异常累计问题**：网络恢复后不再把历史错误永久累计到退出阈值
+* **避免容器重启循环**：Telegram 或代理网络异常不再主动停止应用，交给内置轮询机制自动重连
+* **新增异常窗口配置**：`NETWORK_ERROR_RESET_SECONDS` 默认 300 秒，仅用于分组记录诊断日志
 
 ### v1.1.4 (2026-06-08)
 * **重构清理逻辑**：
