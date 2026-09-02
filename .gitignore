@@ -1,2 +1,7 @@
 # Memory 目录 - 不上传到 GitHub
 memory/
+
+# 本地部署配置（可能包含 Token）
+.env
+.env.*
+!.env.example

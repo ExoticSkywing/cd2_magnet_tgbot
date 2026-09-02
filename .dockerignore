@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+docs/
+tests/
+CLAUDE.md
+README.md
+docker-compose.yml

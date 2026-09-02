@@ -23,28 +23,19 @@
 
 ## 🛠️ 部署指南 (Docker Compose)
 
-推荐使用 Docker Compose 进行部署。在您的服务器上创建目录并编写 `docker-compose.yml`：
+推荐使用 Docker Compose 进行部署。仓库中的 `docker-compose.yml` 会从同目录的 `.env` 读取配置；真实 Token 不需要写入 Compose 文件。
 
-```yaml
-services:
-  cd2-bot:
-    image: ghcr.io/ymting/cd2_magnet_tgbot:latest
-    container_name: tg_cd2_manager
-    restart: always
-    volumes:
-      - ./blacklist.txt:/app/blacklist.txt  # 持久化黑名单文件
-    environment:
-      - CD2_ADDRESS=192.168.31.224:19798    # CloudDrive2 的 gRPC 地址
-      - CD2_TOKEN=你的_CD2_API_TOKEN         # CD2 设置中获取的 Token
-      - TG_TOKEN=你的_机器人_TOKEN           # 从 @BotFather 获取的 Token
-      - SAVE_PATH=/115/离线下载              # 下载保存的根目录
-      - ADMIN_IDS=1234567,8901234            # 管理员数字 ID，多个用逗号隔开
-      - SIZE_THRESHOLD=300                   # 判定垃圾任务的体积阈值 (MB)
-      - PROXY_URL=http://192.168.31.10:7890  # 可选：访问 Telegram 的代理地址
-      - NETWORK_ERROR_RESET_SECONDS=300      # 网络异常静默多久后重新计数（秒）
-      - CLEAN_CRON=30 3 * * *
-
+```bash
+cp -n .env.example .env
+chmod 600 .env
+# 编辑 .env，至少填写 CD2_ADDRESS、CD2_TOKEN、TG_TOKEN 和 ADMIN_IDS
+docker compose up -d --build
+docker compose logs -f cd2-bot
 ```
+
+`.env` 已被 `.gitignore` 和 `.dockerignore` 排除，不会提交到 Git，也不会被复制进本地构建的镜像。
+
+如果 CloudDrive2 以 Docker 的 `host` 网络模式运行，Linux 部署推荐将 `CD2_ADDRESS` 填为 `host.docker.internal:19798`；Compose 已自动配置 `host-gateway`。如果你的 CD2 只绑定在某个可达的局域网地址，也可以填该地址和端口。
 ---
 
 ## 📖 环境变量详细说明
