@@ -37,6 +37,7 @@ TG_BOT_TOKEN = os.getenv("TG_TOKEN", "")  # Telegram 机器人 Token
 ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]  # 允许操作的用户 ID
 PROXY_URL = os.getenv("PROXY_URL", "")  # 连接 Telegram 的网络代理
 CLEAN_CRON = os.getenv("CLEAN_CRON", "30 3 * * *")  # 定时清理的 Cron 表达式
+CLEAN_ENABLED = os.getenv("CLEAN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 BLACKLIST_FILE = "blacklist.txt"  # 黑名单关键词存储文件
 SIZE_THRESHOLD_MB = int(os.getenv("SIZE_THRESHOLD", "300"))  # 有效文件的最小体积阈值
 NETWORK_ERROR_RESET_SECONDS = int(os.getenv("NETWORK_ERROR_RESET_SECONDS", "300"))
@@ -311,6 +312,10 @@ async def post_init(application):
     # 初始化并启动调度器
     # 修复假死问题：不要单独创建 AsyncIOScheduler 实例，否则会引发 asyncio 事件循环冲突
     # 改为使用 python-telegram-bot 内置的 job_queue，由于自带的 job_queue 可以良好管理协程，避免卡死。
+    if not CLEAN_ENABLED:
+        logger.info("🛑 定时自动清理已禁用（CLEAN_ENABLED=false），/clean 仍可手动执行。")
+        return
+
     if application.job_queue:
         # job_queue 内部包含了一个配置好的 apscheduler 实例
         application.job_queue.scheduler.add_job(

@@ -50,6 +50,7 @@ docker compose logs -f cd2-bot
 | SIZE_THRESHOLD | 否  | 300 | 文件体积小于此值(MB)将被删除，大于等于此值时检查黑名单 |
 | PROXY_URL      | 否  | - | 连接 Telegram 的代理，支持 http/socks5 |
 | NETWORK_ERROR_RESET_SECONDS | 否 | 300 | 网络异常静默达到此秒数后开始新一轮计数，仅用于日志诊断 |
+| CLEAN_ENABLED  | 否  | true | 是否启用定时自动清理；设为 false 时仍可手动执行 /clean |
 | CLEAN_CRON     | 否  |  30 3 * * * | 定时清理任务的 Cron 表达式|
 
 
