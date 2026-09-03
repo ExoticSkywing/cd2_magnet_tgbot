@@ -5,6 +5,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+data/
 docs/
 tests/
 CLAUDE.md
