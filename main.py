@@ -28,7 +28,14 @@ from telegram.error import NetworkError, TimedOut
 
 from app.config import IntegrationConfig
 from app.javboss_client import JavBossRequestError
-from app.models import JOB_AWAITING_SCAN, JOB_REJECTED
+from app.models import (
+    JOB_AWAITING_QUALITY,
+    JOB_AWAITING_SCAN,
+    JOB_FAILED,
+    JOB_REJECTED,
+    JOB_UNCERTAIN,
+    DownloadJob,
+)
 from app.runtime import IntegrationRuntime
 
 # ==========================================
@@ -583,6 +590,37 @@ async def notify_jav_review_batch(bot, result) -> None:
             logger.warning("JavBoss 验收 Telegram 通知失败 chat_id=%s：%s", chat_id, error)
 
 
+async def notify_jav_download_status(bot, job: DownloadJob) -> None:
+    """通知下载结果，覆盖“落盘待验收”这个此前缺失的反馈节点。"""
+
+    if job.status == JOB_AWAITING_QUALITY:
+        message = (
+            "✅ JavBoss 下载完成\n"
+            f"番号：{job.code}\n"
+            "文件已进入 115/云下载/jav待验收\n"
+            "请在 JavBoss「待验收」中进行质量核验。"
+        )
+    elif job.status == JOB_FAILED:
+        message = (
+            "❌ JavBoss 下载失败\n"
+            f"番号：{job.code}\n"
+            f"原因：{job.error or '云下载服务返回失败'}"
+        )
+    elif job.status == JOB_UNCERTAIN:
+        message = (
+            "⚠️ JavBoss 下载状态不确定\n"
+            f"番号：{job.code}\n"
+            "任务仍保留在记录中，稍后会自动重试查询。"
+        )
+    else:
+        return
+    for chat_id in ADMIN_IDS:
+        try:
+            await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as error:  # Telegram 权限/网络问题不影响下载状态
+            logger.warning("JavBoss 下载状态 Telegram 通知失败 chat_id=%s：%s", chat_id, error)
+
+
 async def post_init(application):
     """
     机器人启动后的初始化:
@@ -597,6 +635,9 @@ async def post_init(application):
     ])
     integration_runtime.http.set_review_notifier(
         lambda result: notify_jav_review_batch(application.bot, result)
+    )
+    integration_runtime.set_download_status_notifier(
+        lambda job: notify_jav_download_status(application.bot, job)
     )
     await integration_runtime.start()
     if application.job_queue:

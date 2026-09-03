@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import posixpath
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from collections.abc import Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 import clouddrive_pb2
@@ -77,6 +79,14 @@ class DownloadGatewayService:
         self.cd2 = cd2
         self.javboss = javboss
         self._poll_lock = asyncio.Lock()
+        self._status_notifier: Callable[[DownloadJob], Awaitable[None]] | None = None
+
+    def set_status_notifier(
+        self, notifier: Callable[[DownloadJob], Awaitable[None]] | None
+    ) -> None:
+        """Register an optional user-facing notification for durable status changes."""
+
+        self._status_notifier = notifier
 
     async def check_ready(self) -> tuple[bool, str]:
         if not self.config.gateway_enabled:
@@ -162,6 +172,7 @@ class DownloadGatewayService:
             job = await self.repository.update_job(
                 idempotency_key, status=status, error=str(error)
             )
+            await self._notify(job)
         return job.task_response()
 
     async def poll_downloads(self) -> None:
@@ -385,26 +396,39 @@ class DownloadGatewayService:
         return ReviewBatchResult(jobs=result, cleanup=cleanup_payload)
 
     async def _notify(self, job: DownloadJob) -> None:
-        if not self.config.callback_enabled:
-            return
-        payload = {
-            "status": job.status,
-            "external_task_id": job.info_hash,
-            "error": job.error,
-            "result_paths": job.result_paths,
-        }
-        try:
-            await self.javboss.update_download_attempt(job.callback_path, payload)
-        except Exception as error:
-            logger.warning(
-                "JavBoss 回调暂存到 outbox attempt_id=%d status=%s: %s",
-                job.attempt_id,
-                job.status,
-                error,
-            )
-            await self.repository.enqueue_callback(
-                job.attempt_id, job.status, payload, str(error)
-            )
+        if self.config.callback_enabled:
+            payload = {
+                "status": job.status,
+                "external_task_id": job.info_hash,
+                "error": job.error,
+                "result_paths": job.result_paths,
+            }
+            try:
+                await self.javboss.update_download_attempt(job.callback_path, payload)
+            except Exception as error:
+                logger.warning(
+                    "JavBoss 回调暂存到 outbox attempt_id=%d status=%s: %s",
+                    job.attempt_id,
+                    job.status,
+                    error,
+                )
+                await self.repository.enqueue_callback(
+                    job.attempt_id, job.status, payload, str(error)
+                )
+        if self._status_notifier is not None:
+            try:
+                # Pass an immutable snapshot to user-facing integrations. A
+                # repository refresh may mutate/reuse the same job instance
+                # after this callback returns; notifications must describe
+                # the transition that triggered them, not a later state.
+                await self._status_notifier(copy.deepcopy(job))
+            except Exception as error:  # pragma: no cover - Telegram/network dependent
+                logger.warning(
+                    "JAV 下载状态通知失败 attempt_id=%d status=%s: %s",
+                    job.attempt_id,
+                    job.status,
+                    error,
+                )
 
     async def flush_callbacks(self) -> None:
         if not self.config.callback_enabled:

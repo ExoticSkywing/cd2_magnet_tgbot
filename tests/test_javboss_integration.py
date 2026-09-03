@@ -13,8 +13,10 @@ from app.jav_cleanup import clean_jav_paths
 from app.models import (
     JOB_AWAITING_QUALITY,
     JOB_AWAITING_SCAN,
+    JOB_FAILED,
     JOB_REJECTED,
     JOB_UNCERTAIN,
+    DownloadJob,
 )
 from app.repository import IntegrationRepository
 
@@ -138,6 +140,32 @@ class DownloadGatewayServiceTest(unittest.IsolatedAsyncioTestCase):
         due = await self.repository.due_callbacks("9999-12-31T00:00:00+00:00")
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["attempt_id"], 31)
+
+    async def test_status_notifier_receives_quality_and_failure_transitions(self):
+        notifier = AsyncMock()
+        self.service.set_status_notifier(notifier)
+        job = DownloadJob(
+            idempotency_key="jav:11:candidate:21",
+            batch_id=41,
+            attempt_id=31,
+            jav_id=11,
+            candidate_id=21,
+            code="TEST-001",
+            magnet_uri=MAGNET,
+            info_hash="0123456789abcdef0123456789abcdef01234567",
+            callback_path="/jav/magnet-queue/attempts/31",
+            status=JOB_AWAITING_QUALITY,
+            result_paths=["/115/云下载/jav待验收/TEST-001"],
+        )
+
+        await self.service._notify(job)
+        job.status = JOB_FAILED
+        job.error = "CloudDrive2 离线任务失败"
+        await self.service._notify(job)
+
+        self.assertEqual(notifier.await_count, 2)
+        self.assertEqual(notifier.await_args_list[0].args[0].status, JOB_AWAITING_QUALITY)
+        self.assertEqual(notifier.await_args_list[1].args[0].status, JOB_FAILED)
 
     async def test_finished_offline_task_enters_quality_review(self):
         submitted = await self.service.submit_batch(batch_payload())

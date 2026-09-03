@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 from .cd2_client import CloudDriveClient
 from .config import IntegrationConfig
 from .download_service import DownloadGatewayService
 from .http_api import GatewayHTTPServer
 from .javboss_client import JavBossClient
+from .models import DownloadJob
 from .repository import IntegrationRepository
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,11 @@ class IntegrationRuntime:
             config, self.repository, self.cd2, self.javboss
         )
         self.http = GatewayHTTPServer(config, self.downloads)
+
+    def set_download_status_notifier(
+        self, notifier: Callable[[DownloadJob], Awaitable[None]] | None
+    ) -> None:
+        self.downloads.set_status_notifier(notifier)
 
     async def start(self) -> None:
         await self.repository.open()
