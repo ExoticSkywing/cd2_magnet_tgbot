@@ -3,10 +3,11 @@ services:
     build: .
     container_name: cd2_tg_bot
     restart: always
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # JavBoss、下载网关与 CloudDrive2 仅在本机互通。
+    network_mode: host
     volumes:
       - ./blacklist.txt:/app/blacklist.txt  # 持久化存储黑名单设置
+      - ./data:/app/data                    # 持久化任务与回调 outbox
     environment:
       CD2_ADDRESS: ${CD2_ADDRESS:?请在 .env 中设置 CD2_ADDRESS}
       CD2_TOKEN: ${CD2_TOKEN:?请在 .env 中设置 CD2_TOKEN}
@@ -18,3 +19,14 @@ services:
       NETWORK_ERROR_RESET_SECONDS: ${NETWORK_ERROR_RESET_SECONDS:-300}
       CLEAN_ENABLED: ${CLEAN_ENABLED:-true}
       CLEAN_CRON: ${CLEAN_CRON:-30 3 * * *}
+      JAV_STAGING_PATH: ${JAV_STAGING_PATH:-/115/云下载/jav待验收}
+      JAV_LIBRARY_PATH: ${JAV_LIBRARY_PATH:-/115/upload/javbosstest}
+      GATEWAY_HOST: ${GATEWAY_HOST:-127.0.0.1}
+      GATEWAY_PORT: ${GATEWAY_PORT:-18081}
+      JAVBOSS_GATEWAY_TOKEN: ${JAVBOSS_GATEWAY_TOKEN:-}
+      INTEGRATION_STATE_DB: ${INTEGRATION_STATE_DB:-/app/data/integration.db}
+      JAVBOSS_BASE_URL: ${JAVBOSS_BASE_URL:-http://127.0.0.1:17654}
+      JAVBOSS_INPUT_TOKEN: ${JAVBOSS_INPUT_TOKEN:-}
+      JAVBOSS_CALLBACK_TOKEN: ${JAVBOSS_CALLBACK_TOKEN:-}
+      JAV_DOWNLOAD_POLL_SECONDS: ${JAV_DOWNLOAD_POLL_SECONDS:-30}
+      JAV_CALLBACK_RETRY_SECONDS: ${JAV_CALLBACK_RETRY_SECONDS:-30}

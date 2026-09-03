@@ -2,3 +2,5 @@ python-telegram-bot
 grpcio
 grpcio-tools
 apscheduler
+aiohttp
+aiosqlite

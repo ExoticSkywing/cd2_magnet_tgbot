@@ -18,6 +18,10 @@
 * 网络代理支持：支持 http 和 socks5 代理，解决国内服务器无法连接 Telegram API 的问题。
 * 自动命令菜单：机器人启动后会自动向 Telegram 注册 /clean 和 /blacklist 命令菜单。
 * 安全保障：严格校验 ADMIN_IDS，仅限管理员操作。
+* JavBoss 联调：单个或批量磁链固定下载到 `/115/云下载/jav待验收`；质量不合格时只删除暂存文件，通过后才移入现有正式库 `/115/upload/javbosstest`。
+* 批量质量验收：JavBoss 可一次提交多项“通过/不合格”决定；Bot 会先按 `/clean` 的规则清理本批“通过”作品所属目录，再将通过项合并移动、不合格项合并删除，单项时自动退化为一项批次。
+* 验收通知：批量验收完成后，Bot 会向 `ADMIN_IDS` 中的管理员发送通过/不合格及清扫统计汇总。
+* 番号入口：使用 `/jav 番号`，或先发送 `/jav` 再发送一整批原始文本，复用 JavBoss 的解析与全局去重规则。
 
 ---
 
@@ -35,7 +39,7 @@ docker compose logs -f cd2-bot
 
 `.env` 已被 `.gitignore` 和 `.dockerignore` 排除，不会提交到 Git，也不会被复制进本地构建的镜像。
 
-如果 CloudDrive2 以 Docker 的 `host` 网络模式运行，Linux 部署推荐将 `CD2_ADDRESS` 填为 `host.docker.internal:19798`；Compose 已自动配置 `host-gateway`。如果你的 CD2 只绑定在某个可达的局域网地址，也可以填该地址和端口。
+Compose 使用 Linux host 网络，使 Bot 能通过 `127.0.0.1` 同时访问 CloudDrive2 与 JavBoss，下载网关也只监听本机。启动前必须手工创建 `/115/云下载/jav待验收`；如果目录不存在，`/readyz` 会返回 503，程序不会尝试使用高权限 Token 自动创建。
 ---
 
 ## 📖 环境变量详细说明
@@ -52,6 +56,14 @@ docker compose logs -f cd2-bot
 | NETWORK_ERROR_RESET_SECONDS | 否 | 300 | 网络异常静默达到此秒数后开始新一轮计数，仅用于日志诊断 |
 | CLEAN_ENABLED  | 否  | true | 是否启用定时自动清理；设为 false 时仍可手动执行 /clean |
 | CLEAN_CRON     | 否  |  30 3 * * * | 定时清理任务的 Cron 表达式|
+| JAV_STAGING_PATH | 否 | /115/云下载/jav待验收 | JavBoss 专属待验收目录；下载、拒绝删除、`/clean` 均限制在此处 |
+| JAV_LIBRARY_PATH | 否 | /115/upload/javbosstest | 质量通过后移动到的正式扫描目录 |
+| GATEWAY_HOST / GATEWAY_PORT | 否 | 127.0.0.1 / 18081 | JavBoss 下载网关监听地址 |
+| JAVBOSS_GATEWAY_TOKEN | 是（联调时） | - | JavBoss 调用下载网关的 Bearer Token |
+| INTEGRATION_STATE_DB | 否 | /app/data/integration.db | 幂等任务及回调 outbox 数据库 |
+| JAVBOSS_BASE_URL | 否 | http://127.0.0.1:17654 | JavBoss API 地址 |
+| JAVBOSS_INPUT_TOKEN | 是（使用 /jav 时） | - | Telegram 番号入口专用 Bearer Token |
+| JAVBOSS_CALLBACK_TOKEN | 是（联调时） | - | 下载状态回调专用 Bearer Token |
 
 
 ---
@@ -59,13 +71,20 @@ docker compose logs -f cd2-bot
 ## 🤖 指令说明
 
 * 直接发送链接：发送磁力、HTTP 或 ed2k 链接，机器人自动提交下载任务。
-* /clean：递归扫描目录，删除小文件和黑名单文件，清理空目录。
+* /jav [文本]：把原始番号文本交给 JavBoss 解析并做全局去重；无参数时读取下一条消息。
+* /cancel：取消等待中的番号输入。
+* /clean：只递归扫描 `JAV_STAGING_PATH`，删除小文件和黑名单文件，清理空目录；不会作用于 `/115/云下载` 中的其他文件。批量验收时会自动对“通过”作品的任务目录执行同样的清扫，未判断作品不会被这一步触碰。
 * /blacklist：查看当前已设置的黑名单关键词。
 * /blacklist [关键词]：动态添加新的过滤关键词。
+
+`/clean` 的回复会先给出本次汇总，再列出发生变化的任务目录：任务文件夹数、扫描目录数、扫描文件数、保留文件数、删除文件数（区分小文件和黑名单）、删除文件夹数及异常数。没有需要处理的内容时会明确显示“无需清理”；目录很多时仅截断明细，不影响汇总统计。
 
 ---
 
 ## 🛠️ 更新日志
+
+### 工作区未发布变更
+* **优化 `/clean` 清理报告**：新增任务文件夹、扫描目录/文件、保留文件、删除文件/文件夹和异常汇总；删除文件区分小文件与黑名单来源，并限制明细长度以适配 Telegram 消息上限。
 
 ### v1.1.5 (2026-07-15)
 * **修复网络异常累计问题**：网络恢复后不再把历史错误永久累计到退出阈值
